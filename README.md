@@ -29,11 +29,10 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 
 ## 📸 Demo Video
 
-Watch a quick demonstration of the file manager in action:
+Short demo showing the application in action:
 
-```
-🎥 [YouTube Demo Video] - Coming soon!
-```
+[YouTube demo](https://youtu.be/VIDEO_ID)
+
 
 ## 🚀 Installation
 
