@@ -1,0 +1,8 @@
+# Core dependencies
+# (curses is built into Python on Unix systems)
+
+# Optional: Image preview support
+pillow>=10.0.0
+
+# Optional: Disk usage information
+psutil>=5.9.0
