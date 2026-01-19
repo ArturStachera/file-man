@@ -31,7 +31,7 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 
 Short demo showing the application in action:
 
-[YouTube demo](https://youtu.be/VIDEO_ID)
+[YouTube demo](https://www.youtube.com/watch?v=_O91ZIo4ti0)
 
 
 ## 🚀 Installation
