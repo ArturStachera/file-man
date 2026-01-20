@@ -4,6 +4,25 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 
 ![Python Version](https://img.shields.io/badge/python-3.8+-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android-lightgrey)
+
+## 🆕 Release Notes
+
+### v1.0.1
+
+- Mouse/touch support (works in desktop terminals and Termux)
+  - Single click/tap selects an item
+  - Double click/double tap enters a directory
+  - Mouse wheel scrolling in the directory tree
+  - Clickable shortcuts panel, bottom action bar, and update box
+- Termux improvements
+  - More robust `run.sh` virtual environment detection (`python`, `python3`, `python3.X`)
+  - Handles non-portable `.venv` directories copied from another system with an actionable message
+  - Disk info fallback via `shutil.disk_usage()` when `psutil` is unavailable or blocked
+- Screenshot management
+  - README screenshot is linked as a GitHub Release asset instead of being stored in the repository
+- Bug fixes
+  - Prevented double-triggering actions on mouse press/release
 
 ## ✨ Features
 
@@ -25,6 +44,7 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
   - Search and filter files
   - Show/hide hidden files
   - Keyboard-driven navigation
+  - Mouse/touch-friendly navigation
   - Auto-update checker built-in
 
 ## 📸 Demo Video
@@ -32,7 +52,6 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 Short demo showing the application in action:
 
 [YouTube demo](https://www.youtube.com/watch?v=_O91ZIo4ti0)
-
 
 ## 🚀 Installation
 
@@ -49,19 +68,25 @@ sudo apt install python3 python3-venv python3-pip
 sudo pacman -S python
 ```
 
+**For Android (Termux):**
+```bash
+# Install Termux from F-Droid (recommended) or Google Play
+# Then inside Termux:
+pkg update && pkg upgrade
+pkg install python git libjpeg-turbo libpng zlib
+```
+
 Python 3.8 or higher is required. The application works on Linux/Unix terminals that support curses.
 
 ### Quick Start with Launcher Script
 
 The easiest way to run the file manager is using the provided launcher script:
 
+**Linux/macOS/Termux:**
 ```bash
 # Clone the repository
 git clone https://github.com/ArturStachera/file-man.git
 cd file-man
-
-# Make the launcher executable
-chmod +x run.sh
 
 # Run the file manager (handles all setup automatically)
 ./run.sh
@@ -79,7 +104,7 @@ If you prefer to set up manually:
 ```bash
 # Create and activate virtual environment
 python3 -m venv .venv
-source .venv/bin/activate  # On Linux/Mac
+source .venv/bin/activate  # On Linux/Mac/Termux
 
 # Install dependencies
 pip install -r requirements.txt
@@ -93,7 +118,7 @@ python file_manager.py
 For full functionality, the following packages are recommended:
 
 ```bash
-# Image preview support (ANSI)
+# Image preview support (ASCII art)
 pip install pillow
 
 # Disk usage information
@@ -101,6 +126,8 @@ pip install psutil
 ```
 
 These are included in `requirements.txt` and will be installed automatically by `run.sh`.
+
+**Note for Termux users:** Image preview works with ASCII art conversion. Disk usage info shows your Termux home directory storage.
 
 ## ⌨️ Keyboard Shortcuts
 
@@ -215,6 +242,8 @@ pip install pillow
 pip install psutil
 ```
 
+**Note for Termux:** If you see "Disk info unavailable" even with psutil installed, this is normal due to Android restrictions. The app will still show your home directory storage usage.
+
 ### Problem: Unicode characters not displaying correctly
 **Solution:** Ensure your terminal supports UTF-8 encoding
 ```bash
@@ -232,6 +261,19 @@ source .venv/bin/activate  # Then run the application
 ```bash
 chmod +x run.sh
 ```
+
+### Termux-specific issues
+
+**Problem:** Pillow build fails on Termux
+**Solution:** Make sure you installed the required packages:
+```bash
+pkg install libjpeg-turbo libpng zlib
+```
+
+**Problem:** Permission errors on Android
+**Solution:** Termux has limited access to some system directories. Navigate to accessible directories like:
+- `/data/data/com.termux/files/home` (your Termux home)
+- `/storage/emulated/0` (internal storage, if permissions granted)
 
 ## 📝 Roadmap & Planned Features
 
@@ -256,7 +298,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Image processing with [Pillow](https://python-pillow.org/)
 - System information with [psutil](https://github.com/giampaolo/psutil)
 - Inspired by classic file managers like Midnight Commander and ranger
+- Tested on Linux, macOS, and Android (Termux)
 
-
+---
 
 Made with ❤️ and Python | Star ⭐ if you find this useful!

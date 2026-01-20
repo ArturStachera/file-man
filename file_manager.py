@@ -221,22 +221,33 @@ class DiskInfo:
     """Provides disk usage information"""
     @staticmethod
     def get_disk_info() -> List[Tuple[str, int, int, int]]:
-        if not HAS_PSUTIL:
-            return []
-        
-        disks = []
-        for partition in psutil.disk_partitions():
+        if HAS_PSUTIL:
+            disks = []
             try:
-                usage = psutil.disk_usage(partition.mountpoint)
-                disks.append((
-                    partition.mountpoint,
-                    usage.total,
-                    usage.used,
-                    usage.free
-                ))
-            except PermissionError:
-                continue
-        return disks
+                partitions = psutil.disk_partitions()
+            except (PermissionError, OSError):
+                partitions = []
+
+            for partition in partitions:
+                try:
+                    usage = psutil.disk_usage(partition.mountpoint)
+                    disks.append((
+                        partition.mountpoint,
+                        usage.total,
+                        usage.used,
+                        usage.free
+                    ))
+                except (PermissionError, OSError):
+                    continue
+
+            if disks:
+                return disks
+
+        try:
+            usage = shutil.disk_usage(Path.home())
+            return [(str(Path.home()), usage.total, usage.used, usage.free)]
+        except Exception:
+            return []
     
     @staticmethod
     def bytes_to_gb(bytes_val: int) -> float:
@@ -334,6 +345,9 @@ class FileManagerUI:
         self.message_duration = 5.0
         self.clipboard: Optional[Path] = None
         self.clipboard_mode = None
+        self._status_click_regions: List[Tuple[int, int, int]] = []
+        self._last_click_target: Optional[Tuple[str, int]] = None
+        self._last_click_time = 0.0
         
         self.current_version = "1.0.0"
         self.github_repo = "ArturStachera/file-man"
@@ -522,7 +536,10 @@ class FileManagerUI:
         disks = DiskInfo.get_disk_info()
         
         if not disks:
-            info = "Disk info unavailable (install psutil: pip install psutil)"
+            if not HAS_PSUTIL:
+                info = "Disk info unavailable (install psutil: pip install psutil)"
+            else:
+                info = "Disk info unavailable"
             try:
                 self.stdscr.addstr(y, x, info[:width], curses.color_pair(6))
             except curses.error:
@@ -548,6 +565,40 @@ class FileManagerUI:
             self.stdscr.addstr(y, x, help_text[:width-25], curses.color_pair(5))
         except curses.error:
             pass
+
+        self._status_click_regions = []
+        display_limit = max(0, width - 25)
+        cursor = 0
+        for token in help_text.split(' '):
+            token_len = len(token)
+            if cursor + token_len > display_limit:
+                break
+            mapped_key: Optional[int] = None
+            if token.startswith('q:'):
+                mapped_key = ord('q')
+            elif token.startswith('d:'):
+                mapped_key = ord('d')
+            elif token.startswith('n:'):
+                mapped_key = ord('n')
+            elif token.startswith('e:'):
+                mapped_key = ord('e')
+            elif token.startswith('c:'):
+                mapped_key = ord('c')
+            elif token.startswith('v:'):
+                mapped_key = ord('v')
+            elif token.startswith('x:'):
+                mapped_key = ord('x')
+            elif token.startswith('r:'):
+                mapped_key = ord('r')
+            elif token.startswith('::'):
+                mapped_key = ord(':')
+            elif token.startswith('/:'):
+                mapped_key = ord('/')
+            elif token.startswith('h:'):
+                mapped_key = ord('h')
+            if mapped_key is not None:
+                self._status_click_regions.append((x + cursor, x + cursor + token_len - 1, mapped_key))
+            cursor += token_len + 1
         
         update_text = "┌─────────────────┐"
         update_btn = "│ u: Check Update │"
@@ -567,6 +618,91 @@ class FileManagerUI:
                 self.stdscr.addstr(y, x + msg_x, message[:width-msg_x-25], curses.color_pair(4))
             except curses.error:
                 pass
+
+    def handle_mouse(self, my: int, mx: int, bstate: int):
+        height, width = self.stdscr.getmaxyx()
+
+        shortcuts_width = 20
+        info_width = 30
+        tree_width = width - shortcuts_width - info_width - 3
+        top_height = height // 2
+
+        update_x = width - 21
+        update_y_top = height - 3
+        update_y_bottom = height - 1
+
+        button1_clicked = getattr(curses, 'BUTTON1_CLICKED', 0)
+        button1_pressed = getattr(curses, 'BUTTON1_PRESSED', 0)
+        button1_released = getattr(curses, 'BUTTON1_RELEASED', 0)
+        button1_double = getattr(curses, 'BUTTON1_DOUBLE_CLICKED', 0)
+        button4_pressed = getattr(curses, 'BUTTON4_PRESSED', 0)
+        button5_pressed = getattr(curses, 'BUTTON5_PRESSED', 0)
+
+        is_click = bool(bstate & button1_clicked)
+        is_double = bool(bstate & button1_double)
+        if not is_click and not is_double:
+            if (bstate & button1_released) and not (bstate & button1_pressed):
+                is_click = True
+
+        if my == height - 1:
+            for x1, x2, mapped_key in self._status_click_regions:
+                if x1 <= mx <= x2:
+                    if is_click:
+                        return self.handle_input(mapped_key)
+                    return True
+
+        if update_y_top <= my <= update_y_bottom and update_x <= mx <= width - 1:
+            if is_click:
+                return self.check_for_updates()
+
+        if 0 <= my < top_height and 0 <= mx < shortcuts_width:
+            if is_click:
+                idx = my - 1
+                if 0 <= idx < len(self.shortcuts):
+                    path, _ = self.shortcuts[idx]
+                    if path.exists():
+                        self.tree.current_path = path
+                        self.tree.selected_index = 0
+                        self.tree.search_term = ""
+                        self.tree.last_mtime = 0
+                        self.tree.scroll_offset = 0
+                        self.tree.load_directory(force=True)
+            return True
+
+        tree_x = shortcuts_width + 1
+        tree_y = 0
+        if tree_y <= my < top_height and tree_x <= mx < tree_x + tree_width:
+            if bstate & button4_pressed:
+                self.tree.navigate_up()
+                return True
+            if bstate & button5_pressed:
+                self.tree.navigate_down()
+                return True
+
+            if is_click or is_double:
+                sep_y = tree_y + (3 if self.tree.search_term else 2)
+                row_start = sep_y + 1
+                row_end = tree_y + top_height - 2
+                if row_start <= my <= row_end:
+                    idx = self.tree.scroll_offset + (my - row_start)
+                    if 0 <= idx < len(self.tree.entries):
+                        self.tree.selected_index = idx
+                        now = time.time()
+                        target = ("tree", idx)
+                        activate = False
+                        if is_double:
+                            activate = True
+                        elif is_click and self._last_click_target == target and (now - self._last_click_time) < 0.40:
+                            activate = True
+                        self._last_click_target = target
+                        self._last_click_time = now
+                        if activate:
+                            entry = self.tree.get_selected_entry()
+                            if entry and entry.is_dir:
+                                self.tree.enter_directory()
+            return True
+
+        return True
     
     def edit_file(self, file_path: Path):
         curses.def_prog_mode()
@@ -757,6 +893,22 @@ class FileManagerUI:
         curses.doupdate()
     
     def handle_input(self, key: int):
+        if key == curses.KEY_MOUSE:
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+            except Exception:
+                return True
+            result = self.handle_mouse(my, mx, bstate)
+
+            height, width = self.stdscr.getmaxyx()
+            visible_height = height // 2 - (5 if self.tree.search_term else 4)
+            if self.tree.selected_index < self.tree.scroll_offset:
+                self.tree.scroll_offset = self.tree.selected_index
+            elif self.tree.selected_index >= self.tree.scroll_offset + visible_height:
+                self.tree.scroll_offset = self.tree.selected_index - visible_height + 1
+
+            return result
+
         entry = self.tree.get_selected_entry()
         
         if key == curses.KEY_UP:
@@ -910,6 +1062,15 @@ def main(stdscr):
     curses.curs_set(0)
     stdscr.keypad(True)
     stdscr.timeout(100)
+
+    try:
+        curses.mouseinterval(0)
+    except Exception:
+        pass
+    try:
+        curses.mousemask(curses.ALL_MOUSE_EVENTS | getattr(curses, 'REPORT_MOUSE_POSITION', 0))
+    except Exception:
+        pass
     
     ui = FileManagerUI(stdscr)
     ui.run()
