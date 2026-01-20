@@ -349,7 +349,7 @@ class FileManagerUI:
         self._last_click_target: Optional[Tuple[str, int]] = None
         self._last_click_time = 0.0
         
-        self.current_version = "1.0.0"
+        self.current_version = "1.0.1"
         self.github_repo = "ArturStachera/file-man"
         
         curses.start_color()
