@@ -59,3 +59,5 @@ dmypy.json
 # Local test files
 test_*.py
 *_test.py
+Screenshot_*.png
+terminal-file-manager*.png
