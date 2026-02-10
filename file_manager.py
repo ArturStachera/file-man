@@ -509,7 +509,7 @@ class FileManagerUI:
         self.shortcut_selected_index = 0
         self.shortcut_scroll_offset = 0
         
-        self.current_version = "1.0.1"
+        self.current_version = "1.0.2"
         self.github_repo = "ArturStachera/file-man"
         
         curses.start_color()
