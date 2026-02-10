@@ -10,6 +10,14 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 
 ## 🆕 Release Notes
 
+### v1.0.2
+
+- **Disk Management Panel:** A new dedicated panel to view, mount, unmount, and open storage drives (USB, HDD/SSD) directly from the UI. Features an integrated in-app sudo password prompt for seamless privileged operations.
+- **Enhanced UI Navigation:** The "Shortcuts" panel has been refactored into a fully navigable list, consistent with other panels. Navigate seamlessly between panels using the `Tab` key, and enjoy overflow scrolling for all lists.
+- **Improved Stability:** Fixed a critical bug preventing application crashes when unmounting the current working directory.
+- **Better Diagnostics:** Mount and unmount operations now provide more detailed error messages to assist with troubleshooting.
+- **Overflow Navigation:** Implemented wrap-around navigation for all lists, allowing selection to loop from top to bottom and vice-versa.
+
 ### v1.0.1
 
 - Mouse/touch support (works in desktop terminals and Termux)
@@ -29,25 +37,27 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 ## ✨ Features
 
 - **5-Panel Interface**
-  - Quick access shortcuts panel
+  - Quick access shortcuts panel (fully navigable)
   - Directory tree with visual navigation
   - Detailed file information
   - Live file preview (text & images in ASCII art)
   - Real-time disk usage statistics
+  - **NEW: Dedicated Drives Panel for mounting/unmounting**
 
 - **File Operations**
   - Create, delete, rename files and directories
   - Copy, cut, and paste with clipboard
   - Edit files directly in Neovim/Vim/Nano
   - Execute shell commands on files
+  - **NEW: Mount and unmount drives with in-app sudo prompt**
 
 - **Advanced Features**
   - Real-time directory auto-refresh
   - Search and filter files
   - Show/hide hidden files
-  - Keyboard-driven navigation
+  - Keyboard-driven navigation (Tab for panel switching, overflow scrolling)
   - Mouse/touch-friendly navigation
-  - Auto-update checker built-in
+  - Auto-update checker built-in (now 'U' key)
 
 ## 📸 Demo Video
 
@@ -138,8 +148,8 @@ These are included in `requirements.txt` and will be installed automatically by 
 |-----|--------|
 | `↑` / `↓` | Move selection up/down |
 | `←` | Go to parent directory |
-| `→` / `Enter` | Enter selected directory |
-| `1-5` | Jump to shortcut (Downloads, Pictures, etc.) |
+| `→` / `Enter` | Enter selected directory / Activate selected shortcut / Mount/Open selected drive |
+| `Tab` | Switch active panel (Tree, Drives, Shortcuts) |
 
 ### File Operations
 | Key | Action |
@@ -154,11 +164,12 @@ These are included in `requirements.txt` and will be installed automatically by 
 
 ### Other
 | Key | Action |
-|-----|--------|
+|-----/--------|
 | `:` | Execute shell command on file |
 | `/` | Search files |
 | `h` | Toggle hidden files visibility |
-| `u` | Check for updates |
+| `u` | Unmount selected drive |
+| `U` | Check for updates |
 | `ESC` | Clear search/cancel |
 | `q` | Quit application |
 

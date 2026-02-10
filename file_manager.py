@@ -109,10 +109,14 @@ class DirectoryTree:
     def navigate_up(self):
         if self.selected_index > 0:
             self.selected_index -= 1
+        elif self.entries:
+            self.selected_index = len(self.entries) - 1
     
     def navigate_down(self):
         if self.selected_index < len(self.entries) - 1:
             self.selected_index += 1
+        elif self.entries:
+            self.selected_index = 0
     
     def enter_directory(self):
         if self.entries and self.entries[self.selected_index].is_dir:
@@ -254,6 +258,153 @@ class DiskInfo:
         return bytes_val / (1024 ** 3)
 
 
+class Drive:
+    """Represents a disk drive or partition."""
+    def __init__(self, data: dict):
+        self.name: str = data.get("name", "")
+        self.type: str = data.get("type", "")
+        self.size: int = int(data.get("size", 0))
+        self.mountpoint: Optional[str] = data.get("mountpoint")
+        self.label: Optional[str] = data.get("label")
+        self.model: Optional[str] = data.get("model")
+        self.is_mounted = bool(self.mountpoint)
+
+    def get_display_name(self) -> str:
+        """Get a user-friendly name for the drive."""
+        if self.label:
+            return self.label
+        if self.model:
+            return self.model
+        return self.name
+
+    def get_size_str(self) -> str:
+        """Convert size to human-readable format."""
+        if self.size == 0:
+            return "N/A"
+        size = self.size
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024.0:
+                return f"{size:.1f} {unit}"
+            size /= 1024.0
+        return f"{size:.1f} PB"
+
+
+class DriveManager:
+    """Handles discovering and managing drives."""
+    def __init__(self):
+        self.drives: List[Drive] = []
+        self.last_refresh = 0
+        self.refresh_interval = 5  # seconds
+
+    def list_drives(self, force: bool = False) -> List[Drive]:
+        """List available block devices, filtering for disks and partitions."""
+        now = time.time()
+        if not force and (now - self.last_refresh) < self.refresh_interval:
+            return self.drives
+
+        self.last_refresh = now
+        drives = []
+        try:
+            # -J for JSON, -b for bytes, -o to specify columns
+            cmd = "lsblk -Jb -o NAME,TYPE,SIZE,MOUNTPOINT,LABEL,MODEL"
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=True)
+            data = json.loads(result.stdout)
+            
+            for device in data.get("blockdevices", []):
+                # We are interested in disks and their partitions
+                if device.get("type") in ["disk", "loop"]:
+                    # And its partitions
+                    for partition in device.get("children", []):
+                         if partition.get("type") in ["part", "loop"]:
+                            drives.append(Drive(partition))
+
+        except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
+            # lsblk might not be present, or output is malformed
+            return []
+        
+        self.drives = sorted(drives, key=lambda d: d.name)
+        return self.drives
+
+    def mount(self, drive: Drive, password: Optional[str] = None) -> Tuple[bool, str]:
+        """Mounts a drive using udisksctl."""
+        if drive.is_mounted:
+            return True, "Already mounted."
+        
+        device_path = f"/dev/{drive.name}"
+        cmd = f"udisksctl mount --block-device {device_path}"
+        
+        try:
+            # First, try without sudo
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                self.list_drives(force=True)
+                return True, f"Mounted {drive.get_display_name()}."
+
+            # If it fails, maybe it needs sudo
+            if password:
+                sudo_cmd = f"echo {shlex.quote(password)} | sudo -S -k {cmd}"
+                result = subprocess.run(sudo_cmd, shell=True, capture_output=True, text=True, timeout=15)
+                if result.returncode == 0:
+                    self.list_drives(force=True)
+                    return True, f"Mounted {drive.get_display_name()} with sudo."
+                else:
+                    error_msg = (result.stderr or result.stdout).strip()
+                    if "incorrect password" in error_msg.lower():
+                        return False, "Incorrect sudo password."
+                    return False, f"Sudo mount failed: {error_msg}"
+            else:
+                 # Check for common graphical password prompt indicators
+                if "polkit" in result.stderr.lower() or "authentication" in result.stderr.lower():
+                    return False, "Needs permissions. Try with sudo."
+                return False, f"Mount failed: {result.stderr.strip()}"
+
+
+        except subprocess.TimeoutExpired:
+            return False, "Mount command timed out."
+        except Exception as e:
+            return False, f"An error occurred: {str(e)}"
+        
+        return False, "Could not mount drive."
+
+    def unmount(self, drive: Drive, password: Optional[str] = None) -> Tuple[bool, str]:
+        """Unmounts a drive using udisksctl."""
+        if not drive.is_mounted:
+            return True, "Already unmounted."
+
+        device_path = f"/dev/{drive.name}"
+        cmd = f"udisksctl unmount --block-device {device_path}"
+
+        try:
+             # First, try without sudo
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                self.list_drives(force=True)
+                return True, f"Unmounted {drive.get_display_name()}."
+            
+            # If it fails, maybe it needs sudo
+            if password:
+                sudo_cmd = f"echo {shlex.quote(password)} | sudo -S -k {cmd}"
+                result = subprocess.run(sudo_cmd, shell=True, capture_output=True, text=True, timeout=15)
+                if result.returncode == 0:
+                    self.list_drives(force=True)
+                    return True, f"Unmounted {drive.get_display_name()} with sudo."
+                else:
+                    return False, f"Sudo unmount failed: {(result.stderr or result.stdout).strip()}"
+            else:
+                if "polkit" in result.stderr.lower() or "authentication" in result.stderr.lower():
+                    return False, "Needs permissions. Try with sudo."
+                return False, f"Unmount failed: {result.stderr.strip()}"
+
+        except subprocess.TimeoutExpired:
+            return False, "Unmount command timed out."
+        except Exception as e:
+            return False, f"An error occurred: {str(e)}"
+        
+        return False, "Could not unmount drive."
+
+
+
+
 class InputDialog:
     """Modal dialog for text input"""
     def __init__(self, stdscr, title: str, initial_text: str = ""):
@@ -348,6 +499,15 @@ class FileManagerUI:
         self._status_click_regions: List[Tuple[int, int, int]] = []
         self._last_click_target: Optional[Tuple[str, int]] = None
         self._last_click_time = 0.0
+
+        self.drive_manager = DriveManager()
+        self.drives: List[Drive] = []
+        self.drive_selected_index = 0
+        self.drive_scroll_offset = 0
+        self.active_panel = "tree" # "tree", "shortcuts", "drives"
+
+        self.shortcut_selected_index = 0
+        self.shortcut_scroll_offset = 0
         
         self.current_version = "1.0.1"
         self.github_repo = "ArturStachera/file-man"
@@ -400,21 +560,75 @@ class FileManagerUI:
             pass
     
     def draw_shortcuts(self, y: int, x: int, height: int, width: int):
-        self.draw_box(y, x, height, width, "Shortcuts")
+        title = "Shortcuts"
+        if self.active_panel == "shortcuts":
+            title = f"<{title}>"
+        self.draw_box(y, x, height, width, title)
+        
         row = y + 1
-        for idx, (path, name) in enumerate(self.shortcuts):
+        visible_height = height - 2
+        start_idx = self.shortcut_scroll_offset
+        end_idx = start_idx + visible_height
+
+        for idx in range(start_idx, min(end_idx, len(self.shortcuts))):
             if row >= y + height - 1:
                 break
-            if path.exists():
-                text = f" {idx+1}. 📁 {name}"
-                try:
-                    self.stdscr.addstr(row, x + 2, text[:width-4], curses.color_pair(1))
-                except curses.error:
-                    pass
+            
+            path, name = self.shortcuts[idx]
+            color = curses.color_pair(1) if path.exists() else curses.color_pair(4)
+            
+            if idx == self.shortcut_selected_index:
+                color = curses.color_pair(3) | curses.A_BOLD
+            
+            text = f" 📁 {name}"
+            try:
+                self.stdscr.addstr(row, x + 2, text[:width-4], color)
+            except curses.error:
+                pass
+            row += 1
+
+    def draw_drives(self, y: int, x: int, height: int, width: int):
+        title = "Drives"
+        if self.active_panel == "drives":
+            title = f"<{title}>"
+        self.draw_box(y, x, height, width, title)
+        
+        row = y + 1
+        visible_height = height - 2
+        start_idx = self.drive_scroll_offset
+        end_idx = start_idx + visible_height
+
+        for idx in range(start_idx, min(end_idx, len(self.drives))):
+            if row >= y + height - 1:
+                break
+            
+            drive = self.drives[idx]
+            icon = "💾"
+            color = curses.color_pair(6) # Default color
+            
+            if drive.is_mounted:
+                icon = "🟢" # Green circle for mounted
+            else:
+                icon = "⚪" # White circle for unmounted
+                
+            if idx == self.drive_selected_index:
+                color = curses.color_pair(3) | curses.A_BOLD
+
+            name = drive.get_display_name()
+            size_str = drive.get_size_str()
+            text = f" {icon} {name} ({size_str})"
+
+            try:
+                self.stdscr.addstr(row, x + 2, text[:width-4], color)
+            except curses.error:
+                pass
             row += 1
     
     def draw_directory_tree(self, y: int, x: int, height: int, width: int):
-        self.draw_box(y, x, height, width, "Directory Tree")
+        title = "Directory Tree"
+        if self.active_panel == "tree":
+            title = f"<{title}>"
+        self.draw_box(y, x, height, width, title)
         
         path_str = str(self.tree.current_path)
         if len(path_str) > width - 6:
@@ -559,7 +773,7 @@ class FileManagerUI:
                 pass
     
     def draw_status_bar(self, y: int, x: int, width: int):
-        help_text = "q:Quit d:Del n:New e:Edit c:Copy v:Paste x:Cut r:Rename ::Cmd /:Search h:Hidden"
+        help_text = "q:Quit d:Del n:New e:Edit c:Copy v:Paste x:Cut r:Rename u:Unmount ::Cmd /:Search h:Hidden"
         
         try:
             self.stdscr.addstr(y, x, help_text[:width-25], curses.color_pair(5))
@@ -590,6 +804,8 @@ class FileManagerUI:
                 mapped_key = ord('x')
             elif token.startswith('r:'):
                 mapped_key = ord('r')
+            elif token.startswith('u:'):
+                mapped_key = ord('u')
             elif token.startswith('::'):
                 mapped_key = ord(':')
             elif token.startswith('/:'):
@@ -601,7 +817,7 @@ class FileManagerUI:
             cursor += token_len + 1
         
         update_text = "┌─────────────────┐"
-        update_btn = "│ u: Check Update │"
+        update_btn = "│ U: Check Update │"
         update_end = "└─────────────────┘"
         
         try:
@@ -619,14 +835,42 @@ class FileManagerUI:
             except curses.error:
                 pass
 
+    def navigate_shortcut_up(self):
+        if self.shortcut_selected_index > 0:
+            self.shortcut_selected_index -= 1
+        elif self.shortcuts:
+            self.shortcut_selected_index = len(self.shortcuts) - 1
+
+    def navigate_shortcut_down(self):
+        if self.shortcut_selected_index < len(self.shortcuts) - 1:
+            self.shortcut_selected_index += 1
+        elif self.shortcuts:
+            self.shortcut_selected_index = 0
+
+    def navigate_drive_up(self):
+        if self.drive_selected_index > 0:
+            self.drive_selected_index -= 1
+        elif self.drives:
+            self.drive_selected_index = len(self.drives) - 1
+
+    def navigate_drive_down(self):
+        if self.drive_selected_index < len(self.drives) - 1:
+            self.drive_selected_index += 1
+        elif self.drives:
+            self.drive_selected_index = 0
+
     def handle_mouse(self, my: int, mx: int, bstate: int):
         height, width = self.stdscr.getmaxyx()
 
-        shortcuts_width = 20
+        shortcuts_width = 25
         info_width = 30
         tree_width = width - shortcuts_width - info_width - 3
         top_height = height // 2
 
+        shortcuts_h = min(8, top_height)
+        drives_y = shortcuts_h
+        drives_h = top_height - shortcuts_h
+        
         update_x = width - 21
         update_y_top = height - 3
         update_y_bottom = height - 1
@@ -655,23 +899,74 @@ class FileManagerUI:
             if is_click:
                 return self.check_for_updates()
 
-        if 0 <= my < top_height and 0 <= mx < shortcuts_width:
-            if is_click:
-                idx = my - 1
-                if 0 <= idx < len(self.shortcuts):
-                    path, _ = self.shortcuts[idx]
-                    if path.exists():
-                        self.tree.current_path = path
-                        self.tree.selected_index = 0
-                        self.tree.search_term = ""
-                        self.tree.last_mtime = 0
-                        self.tree.scroll_offset = 0
-                        self.tree.load_directory(force=True)
+        if 0 <= my < shortcuts_h and 0 <= mx < shortcuts_width:
+            self.active_panel = "shortcuts"
+            if bstate & button4_pressed:
+                self.navigate_shortcut_up()
+                return True
+            if bstate & button5_pressed:
+                self.navigate_shortcut_down()
+                return True
+
+            if is_click or is_double:
+                row_start = 1
+                row_end = shortcuts_h - 2
+                if row_start <= my <= row_end:
+                    idx = self.shortcut_scroll_offset + (my - row_start)
+                    if 0 <= idx < len(self.shortcuts):
+                        self.shortcut_selected_index = idx
+                        now = time.time()
+                        target = ("shortcut", idx)
+                        activate = False
+                        if is_double:
+                            activate = True
+                        elif is_click and self._last_click_target == target and (now - self._last_click_time) < 0.40:
+                            activate = True
+                        
+                        self._last_click_target = target
+                        self._last_click_time = now
+
+                        if activate:
+                            self.handle_input(ord('\n'))
+            return True
+
+        if drives_y <= my < drives_y + drives_h and 0 <= mx < shortcuts_width:
+            self.active_panel = "drives"
+            if bstate & button4_pressed:
+                self.navigate_drive_up()
+                return True
+            if bstate & button5_pressed:
+                self.navigate_drive_down()
+                return True
+            
+            if is_click or is_double:
+                row_start = drives_y + 1
+                row_end = drives_y + drives_h - 2
+                if row_start <= my <= row_end:
+                    idx = self.drive_scroll_offset + (my - row_start)
+                    if 0 <= idx < len(self.drives):
+                        self.drive_selected_index = idx
+                        now = time.time()
+                        target = ("drive", idx)
+                        activate = False
+                        if is_double:
+                            activate = True
+                        elif is_click and self._last_click_target == target and (now - self._last_click_time) < 0.40:
+                            activate = True
+                        
+                        self._last_click_target = target
+                        self._last_click_time = now
+
+                        if activate:
+                            # Emulate enter key press
+                            self.handle_input(ord('\n'))
+
             return True
 
         tree_x = shortcuts_width + 1
         tree_y = 0
         if tree_y <= my < top_height and tree_x <= mx < tree_x + tree_width:
+            self.active_panel = "tree"
             if bstate & button4_pressed:
                 self.tree.navigate_up()
                 return True
@@ -875,14 +1170,21 @@ class FileManagerUI:
         self.stdscr.erase()
         height, width = self.stdscr.getmaxyx()
         
-        shortcuts_width = 20
+        shortcuts_width = 25
         info_width = 30
         tree_width = width - shortcuts_width - info_width - 3
         
         top_height = height // 2
         bottom_height = height - top_height - 3
         
-        self.draw_shortcuts(0, 0, top_height, shortcuts_width)
+        shortcuts_h = min(8, top_height)
+        drives_y = shortcuts_h
+        drives_h = top_height - shortcuts_h
+
+        self.draw_shortcuts(0, 0, shortcuts_h, shortcuts_width)
+        if drives_h > 2:
+            self.draw_drives(drives_y, 0, drives_h, shortcuts_width)
+
         self.draw_directory_tree(0, shortcuts_width + 1, top_height, tree_width)
         self.draw_file_info(0, shortcuts_width + tree_width + 2, top_height, info_width)
         self.draw_file_preview(top_height, 0, bottom_height, width)
@@ -899,49 +1201,129 @@ class FileManagerUI:
             except Exception:
                 return True
             result = self.handle_mouse(my, mx, bstate)
-
-            height, width = self.stdscr.getmaxyx()
-            visible_height = height // 2 - (5 if self.tree.search_term else 4)
-            if self.tree.selected_index < self.tree.scroll_offset:
-                self.tree.scroll_offset = self.tree.selected_index
-            elif self.tree.selected_index >= self.tree.scroll_offset + visible_height:
-                self.tree.scroll_offset = self.tree.selected_index - visible_height + 1
-
+            # Mouse handling might change the active panel or selection, so we ensure visiblity
+            self.ensure_selection_visible()
             return result
 
         entry = self.tree.get_selected_entry()
+
+        if key == ord('\t'):
+            panels = ["tree", "drives", "shortcuts"]
+            try:
+                current_index = panels.index(self.active_panel)
+                self.active_panel = panels[(current_index + 1) % len(panels)]
+            except ValueError:
+                self.active_panel = "tree"
         
-        if key == curses.KEY_UP:
-            self.tree.navigate_up()
+        elif key == curses.KEY_UP:
+            if self.active_panel == "tree":
+                self.tree.navigate_up()
+            elif self.active_panel == "drives":
+                self.navigate_drive_up()
+            elif self.active_panel == "shortcuts":
+                self.navigate_shortcut_up()
+
         elif key == curses.KEY_DOWN:
-            self.tree.navigate_down()
+            if self.active_panel == "tree":
+                self.tree.navigate_down()
+            elif self.active_panel == "drives":
+                self.navigate_drive_down()
+            elif self.active_panel == "shortcuts":
+                self.navigate_shortcut_down()
+
         elif key == curses.KEY_RIGHT or key == ord('\n'):
-            self.tree.enter_directory()
+            if self.active_panel == "tree":
+                self.tree.enter_directory()
+            elif self.active_panel == "shortcuts" and self.shortcuts:
+                 if 0 <= self.shortcut_selected_index < len(self.shortcuts):
+                    path, name = self.shortcuts[self.shortcut_selected_index]
+                    if path.exists():
+                        self.tree.current_path = path
+                        self.tree.selected_index = 0
+                        self.tree.search_term = ""
+                        self.tree.last_mtime = 0
+                        self.tree.load_directory(force=True)
+                    else:
+                        self.set_message(f"Path does not exist: {name}")
+            elif self.active_panel == "drives" and self.drives:
+                if 0 <= self.drive_selected_index < len(self.drives):
+                    drive = self.drives[self.drive_selected_index]
+                    if drive.is_mounted and drive.mountpoint:
+                        self.tree.current_path = Path(drive.mountpoint)
+                        self.tree.selected_index = 0
+                        self.tree.last_mtime = 0
+                        self.tree.load_directory(force=True)
+                        self.set_message(f"Opened {drive.get_display_name()}")
+                    elif not drive.is_mounted:
+                        success, message = self.drive_manager.mount(drive)
+                        if "Needs permissions" in message:
+                            dialog = InputDialog(self.stdscr, f"Sudo password for mounting {drive.name}", "")
+                            password = dialog.show()
+                            if password is not None:
+                                success, message = self.drive_manager.mount(drive, password)
+                        self.set_message(message)
+                        if success:
+                            self.drives = self.drive_manager.list_drives(force=True)
+
         elif key == curses.KEY_LEFT:
-            self.tree.current_path = self.tree.current_path.parent
-            self.tree.selected_index = 0
-            self.tree.last_mtime = 0
-            self.tree.load_directory(force=True)
-        elif key == ord('d') and entry:
-            if entry.name != "..":
-                if FileOperations.delete_file(entry.path):
-                    self.set_message("Deleted successfully")
-                    self.tree.load_directory(force=True)
-                else:
-                    self.set_message("Delete failed")
-        elif key == ord('e') and entry and entry.name != "..":
+            if self.active_panel == "tree":
+                self.tree.current_path = self.tree.current_path.parent
+                self.tree.selected_index = 0
+                self.tree.last_mtime = 0
+                self.tree.load_directory(force=True)
+
+        elif key == ord('u'):
+            if self.active_panel == "drives" and self.drives:
+                if 0 <= self.drive_selected_index < len(self.drives):
+                    drive = self.drives[self.drive_selected_index]
+                    if drive.is_mounted and drive.mountpoint:
+                        mountpoint_before_unmount = drive.mountpoint
+                        success, message = self.drive_manager.unmount(drive)
+                        
+                        if "Needs permissions" in message:
+                            dialog = InputDialog(self.stdscr, f"Sudo password for unmounting {drive.name}", "")
+                            password = dialog.show()
+                            if password is not None:
+                                success, message = self.drive_manager.unmount(drive, password)
+                        
+                        if success:
+                            self.drives = self.drive_manager.list_drives(force=True) # Refresh drive list
+                            
+                            # Check if we were inside the unmounted drive
+                            if mountpoint_before_unmount and str(self.tree.current_path).startswith(mountpoint_before_unmount):
+                                self.tree.current_path = Path.home()
+                                self.tree.selected_index = 0
+                                self.tree.scroll_offset = 0
+                                self.set_message(f"Unmounted. Path reset to home.")
+                            else:
+                                self.set_message(message)
+                            self.tree.load_directory(force=True) # Refresh tree view
+                        else:
+                            self.set_message(message)
+                    else:
+                        self.set_message("Drive is not mounted.")
+        
+        elif key == ord('U'):
+            return self.check_for_updates()
+
+        elif key == ord('d') and entry and entry.name != ".." and self.active_panel == "tree":
+            if FileOperations.delete_file(entry.path):
+                self.set_message("Deleted successfully")
+                self.tree.load_directory(force=True)
+            else:
+                self.set_message("Delete failed")
+        elif key == ord('e') and entry and entry.name != ".." and self.active_panel == "tree":
             if not entry.is_dir:
                 self.edit_file(entry.path)
             else:
                 self.set_message("Cannot edit directory")
-        elif key == ord(':') and entry and entry.name != "..":
+        elif key == ord(':') and entry and entry.name != ".." and self.active_panel == "tree":
             dialog = InputDialog(self.stdscr, "Execute command (use {file} for path)", "")
             result = dialog.show()
             if result:
                 self.execute_command(result, entry.path)
-        elif key == ord('u'):
-            return self.check_for_updates()
-        elif key == ord('n'):
+        
+        elif key == ord('n') and self.active_panel == "tree":
             dialog = InputDialog(self.stdscr, "Create (f:file d:directory) name")
             result = dialog.show()
             if result:
@@ -963,7 +1345,7 @@ class FileManagerUI:
                         self.set_message("Failed to create directory")
                 else:
                     self.set_message("Use 'f name' or 'd name'")
-        elif key == ord('r') and entry and entry.name != "..":
+        elif key == ord('r') and entry and entry.name != ".." and self.active_panel == "tree":
             dialog = InputDialog(self.stdscr, "Rename to", entry.name)
             result = dialog.show()
             if result:
@@ -973,15 +1355,15 @@ class FileManagerUI:
                     self.tree.load_directory(force=True)
                 else:
                     self.set_message("Rename failed")
-        elif key == ord('c') and entry and entry.name != "..":
+        elif key == ord('c') and entry and entry.name != ".." and self.active_panel == "tree":
             self.clipboard = entry.path
             self.clipboard_mode = "copy"
             self.set_message(f"Copied: {entry.name}")
-        elif key == ord('x') and entry and entry.name != "..":
+        elif key == ord('x') and entry and entry.name != ".." and self.active_panel == "tree":
             self.clipboard = entry.path
             self.clipboard_mode = "cut"
             self.set_message(f"Cut: {entry.name}")
-        elif key == ord('v') and self.clipboard:
+        elif key == ord('v') and self.clipboard and self.active_panel == "tree":
             dest_path = self.tree.current_path / self.clipboard.name
             
             if dest_path.exists():
@@ -1021,35 +1403,49 @@ class FileManagerUI:
             self.tree.show_hidden = not self.tree.show_hidden
             self.tree.load_directory(force=True)
             self.set_message(f"Hidden files: {'shown' if self.tree.show_hidden else 'hidden'}")
-        elif ord('1') <= key <= ord('5'):
-            idx = key - ord('1')
-            if idx < len(self.shortcuts):
-                path, _ = self.shortcuts[idx]
-                if path.exists():
-                    self.tree.current_path = path
-                    self.tree.selected_index = 0
-                    self.tree.search_term = ""
-                    self.tree.last_mtime = 0
-                    self.tree.load_directory(force=True)
         elif key == ord('q'):
             return False
         
-        height, width = self.stdscr.getmaxyx()
-        visible_height = height // 2 - (5 if self.tree.search_term else 4)
-        if self.tree.selected_index < self.tree.scroll_offset:
-            self.tree.scroll_offset = self.tree.selected_index
-        elif self.tree.selected_index >= self.tree.scroll_offset + visible_height:
-            self.tree.scroll_offset = self.tree.selected_index - visible_height + 1
+        self.ensure_selection_visible()
         
         return True
+
+    def ensure_selection_visible(self):
+        """Adjusts scroll offsets to make sure the selected item is visible."""
+        height, width = self.stdscr.getmaxyx()
+        shortcuts_h = min(8, height // 2)
+
+        if self.active_panel == "shortcuts":
+            visible_height = shortcuts_h - 2
+            if visible_height > 0:
+                if self.shortcut_selected_index < self.shortcut_scroll_offset:
+                    self.shortcut_scroll_offset = self.shortcut_selected_index
+                elif self.shortcut_selected_index >= self.shortcut_scroll_offset + visible_height:
+                    self.shortcut_scroll_offset = self.shortcut_selected_index - visible_height + 1
+        elif self.active_panel == "tree":
+            visible_height = height // 2 - (5 if self.tree.search_term else 4)
+            if self.tree.selected_index < self.tree.scroll_offset:
+                self.tree.scroll_offset = self.tree.selected_index
+            elif self.tree.selected_index >= self.tree.scroll_offset + visible_height:
+                self.tree.scroll_offset = self.tree.selected_index - visible_height + 1
+        elif self.active_panel == "drives":
+            drives_h = (height // 2) - shortcuts_h
+            visible_height = drives_h - 2
+            if visible_height > 0:
+                if self.drive_selected_index < self.drive_scroll_offset:
+                    self.drive_scroll_offset = self.drive_selected_index
+                elif self.drive_selected_index >= self.drive_scroll_offset + visible_height:
+                    self.drive_scroll_offset = self.drive_selected_index - visible_height + 1
     
     def run(self):
         running = True
         refresh_counter = 0
+        self.drives = self.drive_manager.list_drives(force=True) # Initial load
         while running:
             refresh_counter += 1
-            if refresh_counter >= 10:
+            if refresh_counter >= 100: # Refresh every 10 seconds
                 self.tree.load_directory()
+                self.drives = self.drive_manager.list_drives()
                 refresh_counter = 0
             
             self.draw()
