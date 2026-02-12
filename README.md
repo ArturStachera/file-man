@@ -10,6 +10,12 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 
 ## 🆕 Release Notes
 
+### v1.0.3
+
+- **Dual-Panel File Tree:** Introduced a toggleable second file tree panel (key `t`), allowing for efficient side-by-side browsing, copying, and moving of files between directories, similar to Midnight Commander. The second panel remembers its last visited location.
+- **Enhanced Help Screen:** The help screen (`m` key) now dynamically scales and centers its display based on terminal size and content, ensuring readability for all shortcuts without text wrapping.
+- **Simplified Status Bar:** The main status bar now provides a concise overview of essential file operation shortcuts, with a dedicated "[M]ore" button to access the comprehensive help screen.
+
 ### v1.0.2
 
 - **Disk Management Panel:** A new dedicated panel to view, mount, unmount, and open storage drives (USB, HDD/SSD) directly from the UI. Features an integrated in-app sudo password prompt for seamless privileged operations.
@@ -36,9 +42,10 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 
 ## ✨ Features
 
-- **5-Panel Interface**
+- **5/6-Panel Interface (dynamic)**
   - Quick access shortcuts panel (fully navigable)
-  - Directory tree with visual navigation
+  - Primary directory tree with visual navigation
+  - Secondary directory tree (toggleable with `t`)
   - Detailed file information
   - Live file preview (text & images in ASCII art)
   - Real-time disk usage statistics

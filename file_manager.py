@@ -71,61 +71,84 @@ class DirectoryTree:
         self.show_hidden = False
         self.search_term = ""
         self.last_mtime = 0
+        self.selection: set[Path] = set()
         self.load_directory()
-    
+
     def load_directory(self, force: bool = False):
         """Load contents of current directory"""
         try:
             current_mtime = self.current_path.stat().st_mtime
             if not force and current_mtime == self.last_mtime and self.entries:
                 return False
-            
+
             self.last_mtime = current_mtime
             items = list(self.current_path.iterdir())
             self.entries = [FileEntry(item) for item in items]
-            
+
             if not self.show_hidden:
                 self.entries = [e for e in self.entries if not e.is_hidden]
-            
+
             if self.search_term:
                 self.entries = [e for e in self.entries if self.search_term.lower() in e.name.lower()]
-            
+
             self.entries.sort(key=lambda x: (not x.is_dir, x.name.lower()))
-            
+
             if self.current_path != self.current_path.parent:
                 parent_entry = FileEntry(self.current_path.parent)
                 parent_entry.name = ".."
                 self.entries.insert(0, parent_entry)
-            
+
             self.selected_index = min(self.selected_index, len(self.entries) - 1)
             if self.selected_index < 0:
                 self.selected_index = 0
-            
+
             return True
         except PermissionError:
             self.entries = []
             return False
-    
+
     def navigate_up(self):
         if self.selected_index > 0:
             self.selected_index -= 1
         elif self.entries:
             self.selected_index = len(self.entries) - 1
-    
+
     def navigate_down(self):
         if self.selected_index < len(self.entries) - 1:
             self.selected_index += 1
         elif self.entries:
             self.selected_index = 0
-    
+
     def enter_directory(self):
         if self.entries and self.entries[self.selected_index].is_dir:
             self.current_path = self.entries[self.selected_index].path
             self.selected_index = 0
             self.scroll_offset = 0
             self.last_mtime = 0
+            self.selection.clear()
             self.load_directory(force=True)
-    
+
+    def toggle_selection(self):
+        """Toggles the selection of the current item."""
+        entry = self.get_selected_entry()
+        if entry and entry.name != "..":
+            if entry.path in self.selection:
+                self.selection.remove(entry.path)
+            else:
+                self.selection.add(entry.path)
+
+    def toggle_select_all(self):
+        """Selects all items if not all are selected, otherwise clears selection."""
+        all_paths = {e.path for e in self.entries if e.name != ".."}
+        if self.selection == all_paths:
+            self.selection.clear()
+        else:
+            self.selection.update(all_paths)
+
+    def clear_selection(self):
+        """Clears the current selection."""
+        self.selection.clear()
+
     def get_selected_entry(self) -> Optional[FileEntry]:
         if self.entries:
             return self.entries[self.selected_index]
@@ -235,12 +258,14 @@ class DiskInfo:
             for partition in partitions:
                 try:
                     usage = psutil.disk_usage(partition.mountpoint)
-                    disks.append((
-                        partition.mountpoint,
-                        usage.total,
-                        usage.used,
-                        usage.free
-                    ))
+                    disks.append(
+                        (
+                            partition.mountpoint,
+                            usage.total,
+                            usage.used,
+                            usage.free
+                        )
+                    )
                 except (PermissionError, OSError):
                     continue
 
@@ -404,7 +429,6 @@ class DriveManager:
 
 
 
-
 class InputDialog:
     """Modal dialog for text input"""
     def __init__(self, stdscr, title: str, initial_text: str = ""):
@@ -491,10 +515,14 @@ class FileManagerUI:
     def __init__(self, stdscr):
         self.stdscr = stdscr
         self.tree = DirectoryTree(Path.home())
+        self.tree2 = None
+        self.show_second_panel = False
+        self.active_tree = self.tree
+
         self.message = ""
         self.message_time = 0
         self.message_duration = 5.0
-        self.clipboard: Optional[Path] = None
+        self.clipboard: List[Path] = []
         self.clipboard_mode = None
         self._status_click_regions: List[Tuple[int, int, int]] = []
         self._last_click_target: Optional[Tuple[str, int]] = None
@@ -504,12 +532,12 @@ class FileManagerUI:
         self.drives: List[Drive] = []
         self.drive_selected_index = 0
         self.drive_scroll_offset = 0
-        self.active_panel = "tree" # "tree", "shortcuts", "drives"
+        self.active_panel = "tree" # "tree", "tree2", "shortcuts", "drives"
 
         self.shortcut_selected_index = 0
         self.shortcut_scroll_offset = 0
         
-        self.current_version = "1.0.2"
+        self.current_version = "1.0.3"
         self.github_repo = "ArturStachera/file-man"
         
         curses.start_color()
@@ -624,45 +652,45 @@ class FileManagerUI:
                 pass
             row += 1
     
-    def draw_directory_tree(self, y: int, x: int, height: int, width: int):
+    def draw_directory_tree(self, tree: DirectoryTree, y: int, x: int, height: int, width: int, is_active: bool):
         title = "Directory Tree"
-        if self.active_panel == "tree":
+        if is_active:
             title = f"<{title}>"
         self.draw_box(y, x, height, width, title)
-        
-        path_str = str(self.tree.current_path)
+
+        path_str = str(tree.current_path)
         if len(path_str) > width - 6:
             path_str = "..." + path_str[-(width-9):]
         try:
             self.stdscr.addstr(y + 1, x + 2, path_str[:width-4], curses.color_pair(6))
         except curses.error:
             pass
-        
-        if self.tree.search_term:
-            search_text = f"Search: {self.tree.search_term}"
+
+        if tree.search_term:
+            search_text = f"Search: {tree.search_term}"
             try:
                 self.stdscr.addstr(y + 2, x + 2, search_text[:width-4], curses.color_pair(3))
             except curses.error:
                 pass
-        
-        sep_y = y + (3 if self.tree.search_term else 2)
+
+        sep_y = y + (3 if tree.search_term else 2)
         for i in range(1, width - 1):
             try:
                 self.stdscr.addch(sep_y, x + i, '─')
             except curses.error:
                 pass
-        
-        visible_height = height - (5 if self.tree.search_term else 4)
-        start_idx = self.tree.scroll_offset
+
+        visible_height = height - (5 if tree.search_term else 4)
+        start_idx = tree.scroll_offset
         end_idx = start_idx + visible_height
-        
+
         row = sep_y + 1
-        for idx in range(start_idx, min(end_idx, len(self.tree.entries))):
+        for idx in range(start_idx, min(end_idx, len(tree.entries))):
             if row >= y + height - 1:
                 break
-            
-            entry = self.tree.entries[idx]
-            
+
+            entry = tree.entries[idx]
+
             if entry.is_dir:
                 icon = "📁"
                 color = curses.color_pair(1)
@@ -672,29 +700,38 @@ class FileManagerUI:
             else:
                 icon = "📄"
                 color = curses.color_pair(6)
-            
-            if idx == self.tree.selected_index:
+
+            if idx == tree.selected_index and is_active:
                 color = curses.color_pair(3) | curses.A_BOLD
-            
+
             name = entry.name
-            if len(name) > width - 8:
-                name = name[:width-11] + "..."
             
-            text = f" {icon} {name}"
+            if entry.name == "..":
+                prefix = "   "
+            elif entry.path in tree.selection:
+                prefix = "[x]"
+            else:
+                prefix = "[ ]"
+
+
+            if len(name) > width - 12:
+                name = name[:width-15] + "..."
+
+            text = f" {prefix} {icon} {name}"
             try:
                 self.stdscr.addstr(row, x + 2, text[:width-4], color)
             except curses.error:
                 pass
-            
+
             row += 1
-    
+
     def draw_file_info(self, y: int, x: int, height: int, width: int):
         self.draw_box(y, x, height, width, "File Info")
-        
-        entry = self.tree.get_selected_entry()
+
+        entry = self.active_tree.get_selected_entry()
         if not entry:
             return
-        
+
         row = y + 1
         info_lines = [
             f"Name: {entry.name}",
@@ -705,11 +742,15 @@ class FileManagerUI:
             f"Readable: {'Yes' if entry.readable else 'No'}",
         ]
         
+        if len(self.active_tree.selection) > 0:
+            info_lines.append("")
+            info_lines.append(f"Selected: {len(self.active_tree.selection)} items")
+
         if self.clipboard:
             info_lines.append("")
             info_lines.append(f"Clipboard: {self.clipboard_mode}")
-            info_lines.append(f"{self.clipboard.name}")
-        
+            info_lines.append(f"{self.clipboard[0].name if len(self.clipboard) == 1 else f'{len(self.clipboard)} items'}")
+
         for line in info_lines:
             if row >= y + height - 1:
                 break
@@ -722,7 +763,7 @@ class FileManagerUI:
     def draw_file_preview(self, y: int, x: int, height: int, width: int):
         self.draw_box(y, x, height, width, "Preview")
         
-        entry = self.tree.get_selected_entry()
+        entry = self.active_tree.get_selected_entry()
         if not entry or entry.is_dir:
             return
         
@@ -772,49 +813,89 @@ class FileManagerUI:
             except curses.error:
                 pass
     
+    def draw_help_screen(self):
+        height, width = self.stdscr.getmaxyx()
+        
+        shortcuts = [
+            ("q", "Quit"),
+            ("d", "Delete"),
+            ("n", "New File/Directory"),
+            ("e", "Edit File"),
+            ("c", "Copy"),
+            ("v", "Paste"),
+            ("x", "Cut"),
+            ("r", "Rename"),
+            ("u", "Unmount Drive"),
+            ("a", "Select/Deselect All"),
+            ("Space", "Toggle Selection"),
+            ("/", "Search"),
+            ("h", "Toggle Hidden Files"),
+            ("t", "Toggle Second Panel"),
+            ("m", "Show this help screen"),
+            ("Tab", "Switch Active Panel"),
+            ("Up/Down", "Navigate"),
+            ("Left/Right", "Go to Parent/Enter Directory"),
+            ("U", "Check for Updates"),
+            (":", "Execute Custom Command")
+        ]
+        
+        max_key_len = max(len(key) for key, _ in shortcuts)
+        max_desc_len = max(len(desc) for _, desc in shortcuts)
+        
+        # Calculate optimal width for two columns + padding
+        # 4 for borders, 2 for left/right padding, 3 for " : ", 2 for separator space
+        content_width = (max_key_len + 3 + max_desc_len) * 2 + 4 
+        help_width = min(content_width, width - 4) 
+        
+        num_rows = (len(shortcuts) + 1) // 2 # +1 for odd number of shortcuts
+        # 4 for top/bottom borders, 2 for title and "Press any key"
+        help_height = min(num_rows + 4, height - 2) 
+
+        help_y = (height - help_height) // 2
+        help_x = (width - help_width) // 2
+        
+        help_win = curses.newwin(help_height, help_width, help_y, help_x)
+        help_win.keypad(True)
+        help_win.border()
+        
+        title = " Help "
+        help_win.addstr(0, (help_width - len(title)) // 2, title, curses.color_pair(5) | curses.A_BOLD)
+        
+        row_offset = 2
+        col_spacing = (help_width - 4) // 2 # Divide usable width by 2 for columns
+        
+        for i, (key, desc) in enumerate(shortcuts):
+            current_row = row_offset + (i // 2)
+            current_col_start = 2 + (i % 2) * col_spacing
+            
+            if current_row >= help_height - 2: # Don't draw if it goes past the bottom
+                break
+
+            key_str = f"{key}:"
+            desc_str = desc
+            
+            # Ensure description fits within its half-column
+            max_desc_col_width = col_spacing - len(key_str) - 1 # 1 for space after key
+            if len(desc_str) > max_desc_col_width:
+                desc_str = desc_str[:max_desc_col_width - 3] + "..."
+            
+            help_win.addstr(current_row, current_col_start, f"{key_str:<{max_key_len + 1}} {desc_str}", curses.color_pair(6))
+
+        help_win.addstr(help_height - 2, (help_width - 20) // 2, "Press any key to close")
+        help_win.refresh()
+        help_win.getch()
+
     def draw_status_bar(self, y: int, x: int, width: int):
-        help_text = "q:Quit d:Del n:New e:Edit c:Copy v:Paste x:Cut r:Rename u:Unmount ::Cmd /:Search h:Hidden"
+        help_text = "q:Quit n:New d:Del r:Rename e:Edit c:Copy x:Cut v:Paste Space:Select"
+        more_btn = "[M]ore"
         
         try:
-            self.stdscr.addstr(y, x, help_text[:width-25], curses.color_pair(5))
+            self.stdscr.addstr(y, x, more_btn, curses.color_pair(5) | curses.A_BOLD)
+            self.stdscr.addstr(y, x + len(more_btn) + 2, help_text[:width - len(more_btn) - 27], curses.color_pair(5))
         except curses.error:
             pass
 
         self._status_click_regions = []
-        display_limit = max(0, width - 25)
-        cursor = 0
-        for token in help_text.split(' '):
-            token_len = len(token)
-            if cursor + token_len > display_limit:
-                break
-            mapped_key: Optional[int] = None
-            if token.startswith('q:'):
-                mapped_key = ord('q')
-            elif token.startswith('d:'):
-                mapped_key = ord('d')
-            elif token.startswith('n:'):
-                mapped_key = ord('n')
-            elif token.startswith('e:'):
-                mapped_key = ord('e')
-            elif token.startswith('c:'):
-                mapped_key = ord('c')
-            elif token.startswith('v:'):
-                mapped_key = ord('v')
-            elif token.startswith('x:'):
-                mapped_key = ord('x')
-            elif token.startswith('r:'):
-                mapped_key = ord('r')
-            elif token.startswith('u:'):
-                mapped_key = ord('u')
-            elif token.startswith('::'):
-                mapped_key = ord(':')
-            elif token.startswith('/:'):
-                mapped_key = ord('/')
-            elif token.startswith('h:'):
-                mapped_key = ord('h')
-            if mapped_key is not None:
-                self._status_click_regions.append((x + cursor, x + cursor + token_len - 1, mapped_key))
-            cursor += token_len + 1
         
         update_text = "┌─────────────────┐"
         update_btn = "│ U: Check Update │"
@@ -968,20 +1049,20 @@ class FileManagerUI:
         if tree_y <= my < top_height and tree_x <= mx < tree_x + tree_width:
             self.active_panel = "tree"
             if bstate & button4_pressed:
-                self.tree.navigate_up()
+                self.active_tree.navigate_up()
                 return True
             if bstate & button5_pressed:
-                self.tree.navigate_down()
+                self.active_tree.navigate_down()
                 return True
 
             if is_click or is_double:
-                sep_y = tree_y + (3 if self.tree.search_term else 2)
+                sep_y = tree_y + (3 if self.active_tree.search_term else 2)
                 row_start = sep_y + 1
                 row_end = tree_y + top_height - 2
                 if row_start <= my <= row_end:
-                    idx = self.tree.scroll_offset + (my - row_start)
-                    if 0 <= idx < len(self.tree.entries):
-                        self.tree.selected_index = idx
+                    idx = self.active_tree.scroll_offset + (my - row_start)
+                    if 0 <= idx < len(self.active_tree.entries):
+                        self.active_tree.selected_index = idx
                         now = time.time()
                         target = ("tree", idx)
                         activate = False
@@ -992,9 +1073,9 @@ class FileManagerUI:
                         self._last_click_target = target
                         self._last_click_time = now
                         if activate:
-                            entry = self.tree.get_selected_entry()
+                            entry = self.active_tree.get_selected_entry()
                             if entry and entry.is_dir:
-                                self.tree.enter_directory()
+                                self.active_tree.enter_directory()
             return True
 
         return True
@@ -1022,7 +1103,7 @@ class FileManagerUI:
         finally:
             curses.reset_prog_mode()
             self.stdscr.refresh()
-            self.tree.load_directory(force=True)
+            self.active_tree.load_directory(force=True)
     
     def execute_command(self, command: str, file_path: Path):
         curses.def_prog_mode()
@@ -1047,7 +1128,7 @@ class FileManagerUI:
         finally:
             curses.reset_prog_mode()
             self.stdscr.refresh()
-            self.tree.load_directory(force=True)
+            self.active_tree.load_directory(force=True)
     
     def check_for_updates(self) -> bool:
         curses.def_prog_mode()
@@ -1172,7 +1253,6 @@ class FileManagerUI:
         
         shortcuts_width = 25
         info_width = 30
-        tree_width = width - shortcuts_width - info_width - 3
         
         top_height = height // 2
         bottom_height = height - top_height - 3
@@ -1185,9 +1265,20 @@ class FileManagerUI:
         if drives_h > 2:
             self.draw_drives(drives_y, 0, drives_h, shortcuts_width)
 
-        self.draw_directory_tree(0, shortcuts_width + 1, top_height, tree_width)
-        self.draw_file_info(0, shortcuts_width + tree_width + 2, top_height, info_width)
-        self.draw_file_preview(top_height, 0, bottom_height, width)
+        if self.show_second_panel:
+            tree1_width = (width - shortcuts_width) // 2
+            tree2_x = shortcuts_width + tree1_width + 1
+            tree2_width = width - tree2_x
+            self.draw_directory_tree(self.tree, 0, shortcuts_width + 1, top_height, tree1_width, self.active_panel == "tree")
+            if self.tree2:
+                self.draw_directory_tree(self.tree2, 0, tree2_x, top_height, tree2_width, self.active_panel == "tree2")
+            self.draw_file_preview(top_height, 0, bottom_height, width)
+        else:
+            tree_width = width - shortcuts_width - info_width - 3
+            self.draw_directory_tree(self.tree, 0, shortcuts_width + 1, top_height, tree_width, True)
+            self.draw_file_info(0, shortcuts_width + tree_width + 2, top_height, info_width)
+            self.draw_file_preview(top_height, 0, bottom_height, width)
+
         self.draw_disk_info(height - 2, 0, width)
         self.draw_status_bar(height - 1, 0, width)
         
@@ -1205,54 +1296,82 @@ class FileManagerUI:
             self.ensure_selection_visible()
             return result
 
-        entry = self.tree.get_selected_entry()
-
         if key == ord('\t'):
             panels = ["tree", "drives", "shortcuts"]
+            if self.show_second_panel:
+                panels.insert(1, "tree2")
+            
             try:
                 current_index = panels.index(self.active_panel)
                 self.active_panel = panels[(current_index + 1) % len(panels)]
             except ValueError:
                 self.active_panel = "tree"
-        
-        elif key == curses.KEY_UP:
+            
             if self.active_panel == "tree":
-                self.tree.navigate_up()
+                self.active_tree = self.tree
+            elif self.active_panel == "tree2":
+                self.active_tree = self.tree2
+
+        elif key == ord('t'):
+            self.show_second_panel = not self.show_second_panel
+            if self.show_second_panel and not self.tree2:
+                self.tree2 = DirectoryTree(Path.home())
+            if not self.show_second_panel:
+                self.active_panel = "tree"
+                self.active_tree = self.tree
+
+        elif key == ord(' '):
+            if self.active_panel in ["tree", "tree2"]:
+                self.active_tree.toggle_selection()
+                self.active_tree.navigate_down()
+        
+        elif key == ord('a'):
+            if self.active_panel in ["tree", "tree2"]:
+                self.active_tree.toggle_select_all()
+
+        elif key == ord('m'):
+            self.draw_help_screen()
+
+        entry = self.active_tree.get_selected_entry()
+
+        if key == curses.KEY_UP:
+            if self.active_panel in ["tree", "tree2"]:
+                self.active_tree.navigate_up()
             elif self.active_panel == "drives":
                 self.navigate_drive_up()
             elif self.active_panel == "shortcuts":
                 self.navigate_shortcut_up()
 
         elif key == curses.KEY_DOWN:
-            if self.active_panel == "tree":
-                self.tree.navigate_down()
+            if self.active_panel in ["tree", "tree2"]:
+                self.active_tree.navigate_down()
             elif self.active_panel == "drives":
                 self.navigate_drive_down()
             elif self.active_panel == "shortcuts":
                 self.navigate_shortcut_down()
 
         elif key == curses.KEY_RIGHT or key == ord('\n'):
-            if self.active_panel == "tree":
-                self.tree.enter_directory()
+            if self.active_panel in ["tree", "tree2"]:
+                self.active_tree.enter_directory()
             elif self.active_panel == "shortcuts" and self.shortcuts:
                  if 0 <= self.shortcut_selected_index < len(self.shortcuts):
                     path, name = self.shortcuts[self.shortcut_selected_index]
                     if path.exists():
-                        self.tree.current_path = path
-                        self.tree.selected_index = 0
-                        self.tree.search_term = ""
-                        self.tree.last_mtime = 0
-                        self.tree.load_directory(force=True)
+                        self.active_tree.current_path = path
+                        self.active_tree.selected_index = 0
+                        self.active_tree.search_term = ""
+                        self.active_tree.last_mtime = 0
+                        self.active_tree.load_directory(force=True)
                     else:
                         self.set_message(f"Path does not exist: {name}")
             elif self.active_panel == "drives" and self.drives:
                 if 0 <= self.drive_selected_index < len(self.drives):
                     drive = self.drives[self.drive_selected_index]
                     if drive.is_mounted and drive.mountpoint:
-                        self.tree.current_path = Path(drive.mountpoint)
-                        self.tree.selected_index = 0
-                        self.tree.last_mtime = 0
-                        self.tree.load_directory(force=True)
+                        self.active_tree.current_path = Path(drive.mountpoint)
+                        self.active_tree.selected_index = 0
+                        self.active_tree.last_mtime = 0
+                        self.active_tree.load_directory(force=True)
                         self.set_message(f"Opened {drive.get_display_name()}")
                     elif not drive.is_mounted:
                         success, message = self.drive_manager.mount(drive)
@@ -1266,11 +1385,11 @@ class FileManagerUI:
                             self.drives = self.drive_manager.list_drives(force=True)
 
         elif key == curses.KEY_LEFT:
-            if self.active_panel == "tree":
-                self.tree.current_path = self.tree.current_path.parent
-                self.tree.selected_index = 0
-                self.tree.last_mtime = 0
-                self.tree.load_directory(force=True)
+            if self.active_panel in ["tree", "tree2"]:
+                self.active_tree.current_path = self.active_tree.current_path.parent
+                self.active_tree.selected_index = 0
+                self.active_tree.last_mtime = 0
+                self.active_tree.load_directory(force=True)
 
         elif key == ord('u'):
             if self.active_panel == "drives" and self.drives:
@@ -1290,14 +1409,14 @@ class FileManagerUI:
                             self.drives = self.drive_manager.list_drives(force=True) # Refresh drive list
                             
                             # Check if we were inside the unmounted drive
-                            if mountpoint_before_unmount and str(self.tree.current_path).startswith(mountpoint_before_unmount):
-                                self.tree.current_path = Path.home()
-                                self.tree.selected_index = 0
-                                self.tree.scroll_offset = 0
+                            if mountpoint_before_unmount and str(self.active_tree.current_path).startswith(mountpoint_before_unmount):
+                                self.active_tree.current_path = Path.home()
+                                self.active_tree.selected_index = 0
+                                self.active_tree.scroll_offset = 0
                                 self.set_message(f"Unmounted. Path reset to home.")
                             else:
                                 self.set_message(message)
-                            self.tree.load_directory(force=True) # Refresh tree view
+                            self.active_tree.load_directory(force=True) # Refresh tree view
                         else:
                             self.set_message(message)
                     else:
@@ -1306,103 +1425,128 @@ class FileManagerUI:
         elif key == ord('U'):
             return self.check_for_updates()
 
-        elif key == ord('d') and entry and entry.name != ".." and self.active_panel == "tree":
-            if FileOperations.delete_file(entry.path):
+        elif key == ord('d') and entry and entry.name != ".." and self.active_panel in ["tree", "tree2"]:
+            if self.active_tree.selection:
+                dialog = InputDialog(self.stdscr, f"Delete {len(self.active_tree.selection)} items? (y/n)")
+                if dialog.show() == 'y':
+                    deleted_count = 0
+                    for path in self.active_tree.selection:
+                        if FileOperations.delete_file(path):
+                            deleted_count += 1
+                    self.set_message(f"Deleted {deleted_count} items")
+                    self.active_tree.selection.clear()
+                    self.active_tree.load_directory(force=True)
+            elif FileOperations.delete_file(entry.path):
                 self.set_message("Deleted successfully")
-                self.tree.load_directory(force=True)
+                self.active_tree.load_directory(force=True)
             else:
                 self.set_message("Delete failed")
-        elif key == ord('e') and entry and entry.name != ".." and self.active_panel == "tree":
-            if not entry.is_dir:
-                self.edit_file(entry.path)
-            else:
-                self.set_message("Cannot edit directory")
-        elif key == ord(':') and entry and entry.name != ".." and self.active_panel == "tree":
+        elif key == ord('e') and entry and not entry.is_dir and self.active_panel in ["tree", "tree2"]:
+            self.edit_file(entry.path)
+        elif key == ord(':') and entry and self.active_panel in ["tree", "tree2"]:
             dialog = InputDialog(self.stdscr, "Execute command (use {file} for path)", "")
             result = dialog.show()
             if result:
                 self.execute_command(result, entry.path)
         
-        elif key == ord('n') and self.active_panel == "tree":
+        elif key == ord('n') and self.active_panel in ["tree", "tree2"]:
             dialog = InputDialog(self.stdscr, "Create (f:file d:directory) name")
             result = dialog.show()
             if result:
                 if result.startswith('f '):
                     name = result[2:]
-                    new_path = self.tree.current_path / name
+                    new_path = self.active_tree.current_path / name
                     if FileOperations.create_file(new_path, is_dir=False):
                         self.set_message("File created")
-                        self.tree.load_directory(force=True)
+                        self.active_tree.load_directory(force=True)
                     else:
                         self.set_message("Failed to create file")
                 elif result.startswith('d '):
                     name = result[2:]
-                    new_path = self.tree.current_path / name
+                    new_path = self.active_tree.current_path / name
                     if FileOperations.create_file(new_path, is_dir=True):
                         self.set_message("Directory created")
-                        self.tree.load_directory(force=True)
+                        self.active_tree.load_directory(force=True)
                     else:
                         self.set_message("Failed to create directory")
                 else:
                     self.set_message("Use 'f name' or 'd name'")
-        elif key == ord('r') and entry and entry.name != ".." and self.active_panel == "tree":
+        elif key == ord('r') and entry and entry.name != ".." and self.active_panel in ["tree", "tree2"]:
             dialog = InputDialog(self.stdscr, "Rename to", entry.name)
             result = dialog.show()
             if result:
                 new_path = entry.path.parent / result
                 if FileOperations.move_file(entry.path, new_path):
                     self.set_message("Renamed successfully")
-                    self.tree.load_directory(force=True)
+                    self.active_tree.load_directory(force=True)
                 else:
                     self.set_message("Rename failed")
-        elif key == ord('c') and entry and entry.name != ".." and self.active_panel == "tree":
-            self.clipboard = entry.path
-            self.clipboard_mode = "copy"
-            self.set_message(f"Copied: {entry.name}")
-        elif key == ord('x') and entry and entry.name != ".." and self.active_panel == "tree":
-            self.clipboard = entry.path
-            self.clipboard_mode = "cut"
-            self.set_message(f"Cut: {entry.name}")
-        elif key == ord('v') and self.clipboard and self.active_panel == "tree":
-            dest_path = self.tree.current_path / self.clipboard.name
-            
-            if dest_path.exists():
-                counter = 1
-                stem = self.clipboard.stem
-                suffix = self.clipboard.suffix
-                while dest_path.exists():
-                    dest_path = self.tree.current_path / f"{stem}_{counter}{suffix}"
-                    counter += 1
-            
+        elif key == ord('c') and self.active_panel in ["tree", "tree2"]:
+            if self.active_tree.selection:
+                self.clipboard = list(self.active_tree.selection)
+                self.clipboard_mode = "copy"
+                self.set_message(f"Copied {len(self.clipboard)} items")
+            elif entry and entry.name != "..":
+                self.clipboard = [entry.path]
+                self.clipboard_mode = "copy"
+                self.set_message(f"Copied: {entry.name}")
+        elif key == ord('x') and self.active_panel in ["tree", "tree2"]:
+            if self.active_tree.selection:
+                self.clipboard = list(self.active_tree.selection)
+                self.clipboard_mode = "cut"
+                self.set_message(f"Cut {len(self.clipboard)} items")
+            elif entry and entry.name != "..":
+                self.clipboard = [entry.path]
+                self.clipboard_mode = "cut"
+                self.set_message(f"Cut: {entry.name}")
+        elif key == ord('v') and self.clipboard and self.active_panel in ["tree", "tree2"]:
             if self.clipboard_mode == "copy":
-                if FileOperations.copy_file(self.clipboard, dest_path):
-                    self.set_message("Pasted successfully")
-                    self.tree.load_directory(force=True)
-                else:
-                    self.set_message("Paste failed")
+                copied_count = 0
+                for src_path in self.clipboard:
+                    dest_path = self.active_tree.current_path / src_path.name
+                    if dest_path.exists():
+                        counter = 1
+                        stem = src_path.stem
+                        suffix = src_path.suffix
+                        while dest_path.exists():
+                            dest_path = self.active_tree.current_path / f"{stem}_{counter}{suffix}"
+                            counter += 1
+                    if FileOperations.copy_file(src_path, dest_path):
+                        copied_count += 1
+                self.set_message(f"Pasted {copied_count} items")
+                self.active_tree.load_directory(force=True)
             elif self.clipboard_mode == "cut":
-                if FileOperations.move_file(self.clipboard, dest_path):
-                    self.set_message("Moved successfully")
-                    self.clipboard = None
-                    self.clipboard_mode = None
-                    self.tree.load_directory(force=True)
-                else:
-                    self.set_message("Move failed")
+                moved_count = 0
+                for src_path in self.clipboard:
+                    dest_path = self.active_tree.current_path / src_path.name
+                    if dest_path.exists():
+                        counter = 1
+                        stem = src_path.stem
+                        suffix = src_path.suffix
+                        while dest_path.exists():
+                            dest_path = self.active_tree.current_path / f"{stem}_{counter}{suffix}"
+                            counter += 1
+                    if FileOperations.move_file(src_path, dest_path):
+                        moved_count += 1
+                self.set_message(f"Moved {moved_count} items")
+                self.clipboard.clear()
+                self.clipboard_mode = None
+                self.active_tree.load_directory(force=True)
         elif key == ord('/'):
-            dialog = InputDialog(self.stdscr, "Search files", self.tree.search_term)
+            dialog = InputDialog(self.stdscr, "Search files", self.active_tree.search_term)
             result = dialog.show()
             if result is not None:
-                self.tree.search_term = result
-                self.tree.selected_index = 0
-                self.tree.load_directory(force=True)
+                self.active_tree.search_term = result
+                self.active_tree.selected_index = 0
+                self.active_tree.load_directory(force=True)
         elif key == 27:
-            if self.tree.search_term:
-                self.tree.search_term = ""
-                self.tree.load_directory(force=True)
+            if self.active_tree.search_term:
+                self.active_tree.search_term = ""
+                self.active_tree.load_directory(force=True)
         elif key == ord('h'):
-            self.tree.show_hidden = not self.tree.show_hidden
-            self.tree.load_directory(force=True)
-            self.set_message(f"Hidden files: {'shown' if self.tree.show_hidden else 'hidden'}")
+            self.active_tree.show_hidden = not self.active_tree.show_hidden
+            self.active_tree.load_directory(force=True)
+            self.set_message(f"Hidden files: {'shown' if self.active_tree.show_hidden else 'hidden'}")
         elif key == ord('q'):
             return False
         
@@ -1422,12 +1566,12 @@ class FileManagerUI:
                     self.shortcut_scroll_offset = self.shortcut_selected_index
                 elif self.shortcut_selected_index >= self.shortcut_scroll_offset + visible_height:
                     self.shortcut_scroll_offset = self.shortcut_selected_index - visible_height + 1
-        elif self.active_panel == "tree":
-            visible_height = height // 2 - (5 if self.tree.search_term else 4)
-            if self.tree.selected_index < self.tree.scroll_offset:
-                self.tree.scroll_offset = self.tree.selected_index
-            elif self.tree.selected_index >= self.tree.scroll_offset + visible_height:
-                self.tree.scroll_offset = self.tree.selected_index - visible_height + 1
+        elif self.active_panel in ["tree", "tree2"]:
+            visible_height = height // 2 - (5 if self.active_tree.search_term else 4)
+            if self.active_tree.selected_index < self.active_tree.scroll_offset:
+                self.active_tree.scroll_offset = self.active_tree.selected_index
+            elif self.active_tree.selected_index >= self.active_tree.scroll_offset + visible_height:
+                self.active_tree.scroll_offset = self.active_tree.selected_index - visible_height + 1
         elif self.active_panel == "drives":
             drives_h = (height // 2) - shortcuts_h
             visible_height = drives_h - 2
@@ -1443,8 +1587,10 @@ class FileManagerUI:
         self.drives = self.drive_manager.list_drives(force=True) # Initial load
         while running:
             refresh_counter += 1
-            if refresh_counter >= 100: # Refresh every 10 seconds
+            if refresh_counter >= 50: # Refresh every 5 seconds
                 self.tree.load_directory()
+                if self.tree2:
+                    self.tree2.load_directory()
                 self.drives = self.drive_manager.list_drives()
                 refresh_counter = 0
             
