@@ -6,6 +6,8 @@ Terminal-based file manager with an elegant ANSI/ASCII UI, built with Python and
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Android-lightgrey)
 
+> **AI-assisted development:** Terminal File Manager was developed using an AI-assisted vibe-coding workflow. See [AI_DISCLOSURE.md](AI_DISCLOSURE.md) for details.
+
 ![Terminal File Manager Screenshot](https://github.com/ArturStachera/file-man/releases/download/v1.0.1/Screenshot_20-Jan-2026.png)
 
 ## 🆕 Release Notes
